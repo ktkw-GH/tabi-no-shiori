@@ -153,6 +153,18 @@ function dayList(trip) {
   return Object.keys(trip.days).sort();
 }
 
+// 開始日〜終了日までの日付(YYYY-MM-DD)の配列を作る
+function dateRange(start, end) {
+  const dates = [];
+  let cur = new Date(start + "T00:00:00");
+  const last = new Date(end + "T00:00:00");
+  while (cur <= last) {
+    dates.push(cur.toISOString().slice(0, 10));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return dates;
+}
+
 function tripStatus(trip) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -287,19 +299,26 @@ function TripPanel({ initial, onSave, onClose }) {
         </div>
         <div className="panel-footer">
           <button className="btn-primary full" disabled={!valid}
-            onClick={() => valid && onSave({
-              ...form,
-              id: initial?.id || uid(),
-              timeDiffHours: form.isInternational ? (parseFloat(form.timeDiffHours) || 0) : 0,
-              budget: form.budget !== "" && form.budget !== null ? parseFloat(form.budget) || 0 : null,
-              archived: initial?.archived || false,
-              days: initial?.days || {},
-              packingList: initial?.packingList || [],
-              shoppingList: initial?.shoppingList || [],
-              todos: initial?.todos || { pre: [], during: [], post: [] },
-              reservations: initial?.reservations || [],
-              expenses: initial?.expenses || [],
-            })}>
+            onClick={() => {
+              if (!valid) return;
+              const days = { ...(initial?.days || {}) };
+              dateRange(form.startDate, form.endDate).forEach((d) => {
+                if (!days[d]) days[d] = [];
+              });
+              onSave({
+                ...form,
+                id: initial?.id || uid(),
+                timeDiffHours: form.isInternational ? (parseFloat(form.timeDiffHours) || 0) : 0,
+                budget: form.budget !== "" && form.budget !== null ? parseFloat(form.budget) || 0 : null,
+                archived: initial?.archived || false,
+                days,
+                packingList: initial?.packingList || [],
+                shoppingList: initial?.shoppingList || [],
+                todos: initial?.todos || { pre: [], during: [], post: [] },
+                reservations: initial?.reservations || [],
+                expenses: initial?.expenses || [],
+              });
+            }}>
             {initial ? "保存する" : "この内容で作成"}
           </button>
         </div>
@@ -310,10 +329,10 @@ function TripPanel({ initial, onSave, onClose }) {
 
 /* ============================== 予定 追加/編集フォーム ============================== */
 
-function ScheduleForm({ trip, initial, onSave, onCancel }) {
+function ScheduleForm({ trip, initial, defaultDate, onSave, onCancel }) {
   const [f, setF] = useState(
     initial || {
-      time: "", endTime: "", category: "移動", timeZone: "jst", title: "",
+      date: defaultDate, time: "", endTime: "", category: "移動", timeZone: "jst", title: "",
       location: "", arrivalLocation: "", endDayOffset: 0, arrivalIsLocalTime: false,
       reservationNumber: "", memo: "",
     }
@@ -322,6 +341,9 @@ function ScheduleForm({ trip, initial, onSave, onCancel }) {
 
   return (
     <div className="mini-form">
+      <label className="field-label">日付</label>
+      <input type="date" className="field-input" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+
       <label className="field-label">開始時刻</label>
       <input type="time" className="field-input" value={f.time} onChange={(e) => setF({ ...f, time: e.target.value })} />
 
@@ -373,7 +395,7 @@ function ScheduleForm({ trip, initial, onSave, onCancel }) {
       <input className="field-input" value={f.memo} onChange={(e) => setF({ ...f, memo: e.target.value })} />
 
       <div className="form-actions">
-        <button className="btn-mini full" onClick={() => onSave({ ...f, id: initial?.id || uid() })} disabled={!f.time || !f.title}>
+        <button className="btn-mini full" onClick={() => onSave({ ...f, id: initial?.id || uid() })} disabled={!f.date || !f.time || !f.title}>
           {initial ? "保存する" : "追加する"}
         </button>
         <button className="btn-secondary full" onClick={onCancel}>やめる</button>
@@ -416,13 +438,23 @@ function ScheduleTab({ trip, updateTrip }) {
     });
   }
 
-  const saveItem = (item) => {
-    const list = trip.days[activeDay] || [];
-    const exists = list.some((x) => x.id === item.id);
-    const newList = exists ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item];
-    updateTrip({ ...trip, days: { ...trip.days, [activeDay]: newList } });
+  const saveItem = (raw) => {
+    const { date, ...item } = raw;
+    const targetDate = date || activeDay;
+    const newDays = { ...trip.days };
+    if (!newDays[targetDate]) newDays[targetDate] = [];
+
+    const wasEditing = (trip.days[activeDay] || []).some((x) => x.id === item.id);
+    if (wasEditing) {
+      // 元の日から取り除く(移動先が同じ日でも一旦外して付け直す)
+      newDays[activeDay] = (newDays[activeDay] || []).filter((x) => x.id !== item.id);
+    }
+    newDays[targetDate] = [...newDays[targetDate], item];
+
+    updateTrip({ ...trip, days: newDays });
     setAdding(false);
     setEditingId(null);
+    if (targetDate !== activeDay) setActiveDay(targetDate);
   };
 
   const deleteItem = (id) => {
@@ -470,7 +502,7 @@ function ScheduleTab({ trip, updateTrip }) {
               </div>
             </div>
           ) : editingId === it.id ? (
-            <ScheduleForm key={it.id} trip={trip} initial={it} onSave={saveItem} onCancel={() => setEditingId(null)} />
+            <ScheduleForm key={it.id} trip={trip} initial={{ ...it, date: activeDay }} defaultDate={activeDay} onSave={saveItem} onCancel={() => setEditingId(null)} />
           ) : (
             <div key={it.id} className="schedule-item clickable" onClick={() => setEditingId(it.id)}>
               <div className="schedule-time-col">
@@ -515,7 +547,7 @@ function ScheduleTab({ trip, updateTrip }) {
           )
         )}
 
-        {adding && <ScheduleForm trip={trip} onSave={saveItem} onCancel={() => setAdding(false)} />}
+        {adding && <ScheduleForm trip={trip} defaultDate={activeDay} onSave={saveItem} onCancel={() => setAdding(false)} />}
       </div>
 
       {!adding && <button className="btn-mini full" onClick={() => setAdding(true)}><Plus size={14} />予定を追加</button>}
